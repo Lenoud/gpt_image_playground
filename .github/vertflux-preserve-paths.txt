@@ -2,3 +2,4 @@
 deploy/vertflux-gateway
 deploy/vertflux-worker.jsonc
 docs/vertflux-deployment.md
+src/main.tsx

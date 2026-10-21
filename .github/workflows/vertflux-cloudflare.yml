@@ -36,12 +36,15 @@ jobs:
         with:
           node-version: '24'
           cache: npm
+      - name: 检查统一认证访问边界
+        run: node --test deploy/vertflux-gateway/auth.check.mjs
       - name: 安装依赖
         run: |
           npm ci
       - name: 构建应用
         run: |
           npm run build
+          cp deploy/vertflux-gateway/site/_worker.js deploy/vertflux-gateway/site/_auth.mjs dist/
       - name: 运行单元测试
         run: |
           npm test

@@ -21,7 +21,7 @@ if (isTauri) {
 }
 
 // 客户端不注册 Service Worker，避免缓存与客户端版本更新冲突
-if (!isTauri && 'serviceWorker' in navigator) {
+if (!isTauri && 'serviceWorker' in navigator && location.hostname !== 'aiimage.vertflux.com') {
   if (import.meta.env.PROD) {
     window.addEventListener('load', () => {
       navigator.serviceWorker.register(`${import.meta.env.BASE_URL}sw.js`).catch((error) => {
