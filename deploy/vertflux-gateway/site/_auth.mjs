@@ -64,7 +64,7 @@ export function createAuthGateway({ host, binding, managementOnly = false, siteT
         }
         audit.auth_result = 'oauth'
         const target = new URL(`/edge/${host.split('.')[0]}${url.pathname}${url.search}`, AUTH_ORIGIN)
-        const headers = new Headers({ Cookie: authCookies(request), Accept: 'text/html' })
+        const headers = new Headers({ Cookie: authCookies(request), Accept: 'text/html', 'X-Request-ID': audit.request_id })
         try {
           const started = Date.now()
           const response = await fetch(target, { headers, redirect: 'manual', signal: AbortSignal.timeout(15000) })
@@ -111,7 +111,7 @@ export function createAuthGateway({ host, binding, managementOnly = false, siteT
             try {
               const started = Date.now()
               const response = await fetch(`${AUTH_ORIGIN}/api/session?app=${encodeURIComponent(host)}`, {
-                headers: { Cookie: cookies, Accept: 'application/json' },
+                headers: { Cookie: cookies, Accept: 'application/json', 'X-Request-ID': audit.request_id },
                 redirect: 'manual', signal: AbortSignal.timeout(15000),
               })
               audit.upstream_status = response.status
