@@ -38,6 +38,9 @@ ENV DEFAULT_MONO_FONT=
 ENV BUILTIN_FONT_SOURCE=
 
 COPY --from=build /app/dist /usr/share/nginx/html
+# Jenkins 工作区使用受限 umask；最终静态资源必须对 Nginx Worker 可读。
+RUN find /usr/share/nginx/html -type d -exec chmod 0755 {} \; \
+    && find /usr/share/nginx/html -type f -exec chmod 0644 {} \;
 COPY deploy/nginx.conf /etc/nginx/templates/default.conf.template
 COPY --chmod=755 deploy/migrate-api-env.envsh /docker-entrypoint.d/05-migrate-api-env.envsh
 COPY --chmod=755 deploy/inject-api-url.sh /docker-entrypoint.d/40-inject-api-url.sh
