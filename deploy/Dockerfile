@@ -1,5 +1,5 @@
 # ---- Build stage ----
-FROM --platform=$BUILDPLATFORM node:20-alpine AS build
+FROM --platform=$BUILDPLATFORM harbor.skyrisai.com/dockerhub-1ms/library/node:20-alpine AS build
 
 WORKDIR /app
 
@@ -17,7 +17,7 @@ COPY . .
 RUN npm run build
 
 # ---- Production stage ----
-FROM nginx:alpine
+FROM harbor.skyrisai.com/dockerhub-1ms/library/nginx:alpine
 
 ENV HOST=0.0.0.0
 ENV PORT=80
