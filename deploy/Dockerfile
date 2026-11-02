@@ -1,5 +1,5 @@
 # ---- Build stage ----
-FROM --platform=$BUILDPLATFORM harbor.skyrisai.com/dockerhub-1ms/library/node:20-alpine AS build
+FROM --platform=$BUILDPLATFORM harbor.skyrisai.com/dockerhub-1ms/library/node:24-alpine AS build
 
 WORKDIR /app
 
