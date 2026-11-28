@@ -4,6 +4,7 @@ import { customProviderSupportsNativeTransparentBackground } from './customProvi
 import { getImageModelFamily, isGptImage26PlusModel, isVectorOrAnimatedFormat, supportsExtendedQuality, supportsGptImage26Params } from './imageModels'
 import { getImageModelParams, getSeedreamSize } from './imageModelParams'
 import { getImageSearchSupport, getImageThinkingSupport } from './imageSearch'
+import { resolveCustomProviderModel } from './imageProviderMappings'
 import { normalizeCodexCliImageSize, normalizeImageSize } from './size'
 
 export const DEFAULT_FAL_IMAGE_SIZE = '1360x1024'
@@ -12,6 +13,7 @@ export const MAX_OPENAI_OUTPUT_IMAGES = 10
 
 export function getMaskDisabledReason(profile: ApiProfile, format?: TaskParams['output_format']) {
   if (getImageModelFamily(profile)) return '当前模型不支持遮罩编辑'
+  if (profile.codexCli && profile.provider !== 'fal') return 'Codex CLI 不支持遮罩编辑'
   if (format === 'gif') return 'GIF 不支持遮罩编辑'
   return undefined
 }
@@ -20,15 +22,31 @@ export function getTaskParamSupport(settings: AppSettings, profile: ApiProfile) 
   const provider = getCustomProviderDefinition(settings, profile.provider)
   return {
     thinking: getImageThinkingSupport(profile, provider).levels.length > 0,
-    complexity: !getImageModelFamily(profile) && supportsGptImage26Params(profile),
+    complexity: !getImageModelFamily(profile) && !getParamDisabledReasons(profile).complexity,
   }
 }
 
-export function getOutputImageLimitForSettings(settings: AppSettings, format?: TaskParams['output_format']) {
-  const profile = getActiveApiProfile(settings)
-  if (getImageModelFamily(profile) === 'seedream' && profile.provider !== 'fal') return 1
-  if (profile.provider === 'fal') return format === 'svg' ? 1 : MAX_FAL_OUTPUT_IMAGES
-  return MAX_OPENAI_OUTPUT_IMAGES
+export function getImageOutputOptions(settings: AppSettings, profile: ApiProfile, params: TaskParams, context: { hasInputImages?: boolean; agent?: boolean } = {}) {
+  const family = getImageModelFamily(profile)
+  const disabled = getParamDisabledReasons(profile, context)
+  const requested = params.output_format
+  const seedreamBackground = context.agent ? 'auto' : params.background ?? 'auto'
+  const background = family === 'seedream' ? seedreamBackground
+    : family || context.agent ? undefined
+    : params.background ?? (params.transparent_output ? 'transparent' : 'auto')
+  const transparent = background === undefined ? params.transparent_output : background === 'transparent'
+  const formatDisabled = disabled.outputFormat || ((requested === 'svg' || requested === 'gif') && disabled[requested])
+  const format = family === 'seedream' && requested === 'jpeg' && !transparent ? 'jpeg'
+    : family || formatDisabled ? 'png' : requested
+  const transparentReason = context.agent ? 'Agent 模式不提供透明背景选项'
+    : format === 'jpeg' ? 'JPEG 不支持透明背景'
+    : !supportsTransparentOutput(settings, profile, format) ? '当前自定义服务商未映射 $params.background，SVG 和 GIF 无法使用透明背景，请关闭透明背景或换用 PNG、WebP' : undefined
+  const compressionReason = family ? '当前模型不使用压缩率参数'
+    : profile.provider === 'fal' ? 'fal.ai 不支持压缩率参数'
+    : disabled.outputFormat ? 'Codex CLI 不支持压缩率参数'
+    : format !== 'jpeg' && format !== 'webp' ? '仅 JPEG 和 WebP 支持压缩率' : undefined
+  const limit = profile.provider !== 'fal' ? MAX_OPENAI_OUTPUT_IMAGES : format === 'svg' ? 1 : MAX_FAL_OUTPUT_IMAGES
+  return { format, background, transparent, transparentReason, compressionReason, limit, disabled }
 }
 
 export function normalizeParamsForSettings(
@@ -37,7 +55,13 @@ export function normalizeParamsForSettings(
   options: { hasInputImages?: boolean; agent?: boolean } = {},
 ): TaskParams {
   const activeProfile = getActiveApiProfile(settings)
-  const outputImageLimit = getOutputImageLimitForSettings(settings)
+  const provider = getCustomProviderDefinition(settings, activeProfile.provider)
+  const imageSize = provider ? resolveCustomProviderModel(provider, activeProfile.model).imageSize : undefined
+  const customModelParams = imageSize?.mode === 'aspect-ratio' ? getImageModelParams(activeProfile, params, imageSize) : undefined
+  const customSizeParams = customModelParams
+    ? { aspect_ratio: customModelParams.aspect_ratio, resolution: customModelParams.resolution, size: 'auto' }
+    : imageSize?.mode === 'pixels' ? { size: normalizeImageSize(params.size) || DEFAULT_PARAMS.size, aspect_ratio: undefined, resolution: undefined } : {}
+  const output = getImageOutputOptions(settings, activeProfile, params, options)
   const nextParams: TaskParams = {
     ...params,
     size: normalizeImageSize(params.size) || DEFAULT_PARAMS.size,
@@ -46,24 +70,26 @@ export function normalizeParamsForSettings(
     google_search: undefined,
     image_search: undefined,
     thinking_level: undefined,
-    background: undefined,
+    background: output.background === 'transparent' && output.transparentReason ? 'opaque' : output.background,
+    transparent_output: output.transparent && !output.transparentReason,
+    output_format: output.format,
+    output_compression: output.compressionReason ? null : params.output_compression,
     watermark: undefined,
-    n: Math.min(outputImageLimit, Math.max(1, params.n || DEFAULT_PARAMS.n)),
+    n: Math.min(output.limit, Math.max(1, params.n || DEFAULT_PARAMS.n)),
   }
 
-  if (getImageModelFamily(activeProfile)) {
+  const family = getImageModelFamily(activeProfile)
+  if (family) {
     const modelParams = getImageModelParams(activeProfile, params)
-    const search = getImageSearchSupport(activeProfile, getCustomProviderDefinition(settings, activeProfile.provider))
-    const thinking = getImageThinkingSupport(activeProfile, getCustomProviderDefinition(settings, activeProfile.provider))
-    if (getImageModelFamily(activeProfile) === 'seedream') {
-      const background = options.agent ? 'auto' : params.background ?? 'auto'
+    const search = getImageSearchSupport(activeProfile, provider)
+    const thinking = getImageThinkingSupport(activeProfile, provider)
+    if (family === 'seedream') {
       return {
         ...nextParams, ...modelParams,
         size: getSeedreamSize(activeProfile, params), quality: 'auto',
         watermark: params.watermark ?? false,
-        background, transparent_output: background === 'transparent',
-        output_format: params.output_format === 'jpeg' && background !== 'transparent' ? 'jpeg' : 'png',
-        output_compression: null, moderation: 'auto', complexity: 'auto',
+        moderation: 'auto', complexity: 'auto',
+        ...customSizeParams,
       }
     }
     return {
@@ -71,51 +97,46 @@ export function normalizeParamsForSettings(
       google_search: search.googleSearch ? undefined : params.google_search,
       image_search: search.imageSearch ? undefined : params.image_search,
       thinking_level: thinking.levels.includes(params.thinking_level ?? '') ? params.thinking_level : undefined,
-      size: 'auto', quality: modelParams.quality ?? 'auto', output_format: 'png', output_compression: null, moderation: 'auto', complexity: 'auto',
+      size: 'auto', quality: modelParams.quality ?? 'auto', moderation: 'auto', complexity: 'auto',
+      ...customSizeParams,
     }
   }
 
   if (isOpenAICompatibleProvider(settings, activeProfile.provider) && activeProfile.codexCli) {
     nextParams.size = normalizeCodexCliImageSize(nextParams.size)
     nextParams.quality = DEFAULT_PARAMS.quality
+    nextParams.complexity = DEFAULT_PARAMS.complexity
+    nextParams.moderation = DEFAULT_PARAMS.moderation
   }
 
   if (activeProfile.provider === 'fal') {
     nextParams.moderation = DEFAULT_PARAMS.moderation
-    nextParams.output_compression = DEFAULT_PARAMS.output_compression
   }
 
-  const disabled = getParamDisabledReasons(activeProfile, options)
+  const disabled = output.disabled
   if (disabled.autoSize && nextParams.size === 'auto') nextParams.size = DEFAULT_FAL_IMAGE_SIZE
   if (disabled.autoQuality && nextParams.quality === 'auto') nextParams.quality = 'high'
   if (disabled.extendedQuality && (nextParams.quality === 'xhigh' || nextParams.quality === 'max')) nextParams.quality = 'high'
   if (disabled.complexity) nextParams.complexity = DEFAULT_PARAMS.complexity
-  const format = nextParams.output_format
-  if ((format === 'svg' || format === 'gif') && disabled[format]) nextParams.output_format = DEFAULT_PARAMS.output_format
-
-  // 格式回退后按实际输出格式计算数量上限。
-  nextParams.n = Math.min(getOutputImageLimitForSettings(settings, nextParams.output_format), Math.max(1, params.n || DEFAULT_PARAMS.n))
-
-  if (nextParams.output_format === 'png' || isVectorOrAnimatedFormat(nextParams.output_format)) {
-    nextParams.output_compression = DEFAULT_PARAMS.output_compression
-  }
-
-  return nextParams
+  return { ...nextParams, ...customSizeParams }
 }
 
 /** 参数面板中不可选的项及原因；normalizeParamsForSettings 按同一结果清洗参数 */
 export function getParamDisabledReasons(profile: ApiProfile, options: { hasInputImages?: boolean; agent?: boolean } = {}): ParamDisabledReasons {
   const isFal = profile.provider === 'fal'
+  const codexCli = profile.codexCli && !isFal && !getImageModelFamily(profile)
   // Responses API 的能力取决于 image_generation 工具的图像模型，而不是首页选择的文本模型
   const isResponses = profile.provider === 'openai' && profile.apiMode === 'responses'
   const gptImage26 = supportsGptImage26Params(profile)
-  const gif = options.agent
-    // Agent 的图片会进入对话上下文继续编辑，只用位图格式
-    ? 'Agent 模式只能输出位图格式'
+  const outputFormat = codexCli ? 'Codex CLI 的输出格式固定为 PNG' : undefined
+  // Agent 的图片会进入对话上下文继续编辑，只用位图格式
+  const gif = outputFormat ?? (options.agent ? 'Agent 模式只能输出位图格式'
     : gptImage26 ? undefined
-    : isResponses ? '当前图像模型不支持此格式' : '当前模型不支持此格式'
+    : isResponses ? '当前图像模型不支持此格式' : '当前模型不支持此格式')
   return {
-    complexity: gptImage26 ? undefined
+    outputFormat,
+    moderation: codexCli ? 'Codex CLI 不支持审核参数' : undefined,
+    complexity: codexCli ? 'Codex CLI 不支持复杂度参数' : gptImage26 ? undefined
       : isResponses ? '当前图像模型不支持复杂度参数' : '当前模型不支持复杂度参数',
     gif,
     svg: gif ?? (isFal && options.hasInputImages ? 'fal.ai 的参考图编辑不支持 SVG' : undefined),
