@@ -83,6 +83,14 @@ const DEFAULT_EDIT_FILES: CustomProviderFileMapping[] = [
   { field: 'mask', source: 'mask' },
 ]
 
+const SUB2API_BODY = {
+  ...DEFAULT_GENERATE_BODY,
+  complexity: '$params.complexity',
+  frame_count: '$params.frame_count',
+  frame_duration_ms: '$params.frame_duration_ms',
+  svg: '$params.svg',
+}
+
 const SUB2API_PROVIDER: CustomProviderDefinition = {
   id: 'sb2api-async',
   name: 'sub2api（异步）',
@@ -91,14 +99,14 @@ const SUB2API_PROVIDER: CustomProviderDefinition = {
     path: 'images/generations/async',
     method: 'POST',
     contentType: 'json',
-    body: DEFAULT_GENERATE_BODY,
+    body: SUB2API_BODY,
     taskIdPath: 'task_id',
   },
   editSubmit: {
     path: 'images/edits/async',
     method: 'POST',
     contentType: 'multipart',
-    body: DEFAULT_EDIT_BODY,
+    body: SUB2API_BODY,
     files: DEFAULT_EDIT_FILES,
     taskIdPath: 'task_id',
   },
@@ -250,12 +258,18 @@ function normalizeResultMapping(value: unknown, fallback: CustomProviderResultMa
 function normalizeSubmitMapping(value: unknown, fallback: CustomProviderSubmitMapping): CustomProviderSubmitMapping {
   const record = isRecord(value) ? value : {}
   const contentType = normalizeContentType(record.contentType, fallback.contentType ?? 'json')
+  const omitValues = isRecord(record.omitValues) ? Object.fromEntries(Object.entries(record.omitValues).flatMap(([key, values]) => {
+    if (!key.startsWith('$') || !Array.isArray(values)) return []
+    const items = values.filter((item): item is string | number | boolean => typeof item === 'string' || typeof item === 'boolean' || typeof item === 'number' && Number.isFinite(item))
+    return items.length ? [[key, items]] : []
+  })) : fallback.omitValues
   return {
     path: normalizeProviderPath(record.path, fallback.path),
     method: normalizeRequestMethod(record.method, fallback.method ?? 'POST'),
     contentType,
     query: normalizeStringRecord(record.query) ?? fallback.query,
     body: normalizeBodyTemplate(record.body, fallback.body ?? (contentType === 'multipart' ? DEFAULT_EDIT_BODY : DEFAULT_GENERATE_BODY)),
+    omitValues,
     files: contentType === 'multipart' ? normalizeFileMappings(record.files, fallback.files) : undefined,
     taskIdPath: typeof record.taskIdPath === 'string' && record.taskIdPath.trim() ? record.taskIdPath.trim() : fallback.taskIdPath,
     result: normalizeResultMapping(record.result, fallback.result ?? DEFAULT_OPENAI_RESULT),
@@ -352,10 +366,18 @@ export function normalizeCustomProviderDefinition(input: unknown, usedIds = new 
     : createCustomProviderId(rawName, usedIds)
   usedIds.add(id)
 
+  const imageSize = isRecord(record.imageSize) ? record.imageSize : undefined
+  const ratios = normalizeStringArray(imageSize?.ratios, []).filter((value) => value === 'auto' || /^\d+(?:\.\d+)?:\d+(?:\.\d+)?$/.test(value) && value.split(':').every((part) => Number(part) > 0))
+  const resolutions = normalizeStringArray(imageSize?.resolutions, []).map((value) => value.toUpperCase())
+
   return {
     id,
     name: rawName,
     template,
+    imageSize: imageSize?.mode === 'pixels' ? { mode: 'pixels' }
+      : imageSize?.mode === 'aspect-ratio' && ratios.length && resolutions.length
+        ? { mode: 'aspect-ratio', ratios: [...new Set(ratios)], resolutions: [...new Set(resolutions)] }
+        : undefined,
     submit: normalizeSubmitMapping(record.submit, {
       path: DEFAULT_CUSTOM_PROVIDER_PATHS.generationPath,
       method: 'POST',
@@ -376,8 +398,8 @@ export function normalizeCustomProviderDefinition(input: unknown, usedIds = new 
       if (!isRecord(item) || !Array.isArray(item.models) || !isRecord(item.submit)) return []
       const models = normalizeStringArray(item.models, [])
       if (!models.length) return []
-      const mapping = normalizeCustomProviderDefinition({ name: rawName, submit: item.submit, editSubmit: item.editSubmit, poll: item.poll })
-      return mapping ? [{ models, submit: mapping.submit, editSubmit: mapping.editSubmit, poll: mapping.poll }] : []
+      const mapping = normalizeCustomProviderDefinition({ name: rawName, imageSize: item.imageSize, submit: item.submit, editSubmit: item.editSubmit, poll: item.poll })
+      return mapping ? [{ models, imageSize: mapping.imageSize, submit: mapping.submit, editSubmit: mapping.editSubmit, poll: mapping.poll }] : []
     }) : undefined,
   }
 }
